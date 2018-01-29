@@ -1,5 +1,5 @@
 ---
-title: "Clasiification with Imbalanced data"
+title: "Classification with Imbalanced data"
 author: "Sanjib Das"
 date: "January 29, 2018"
 output:
