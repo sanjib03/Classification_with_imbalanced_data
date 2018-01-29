@@ -1,0 +1,213 @@
+---
+title: "Clasiification with Imbalanced data"
+author: "Sanjib Das"
+date: "January 29, 2018"
+output:
+  html_notebook:
+    theme: readable
+    toc: yes
+  html_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+### Header
+```{r }
+#Program header-----
+#
+# Description: This program predicts the class of a binary target variable.
+#               The data set contains 12 predictor variables, all are anonymized.
+#
+# Input : data file in csv format
+```
+
+
+### Load Libraries
+
+```{r }
+library(data.table)
+library(caret)
+#install.packages('ROSE')
+library(ROSE)
+library(dummies)
+library(ggcorrplot)
+library(randomForest)
+```
+
+
+
+### Load data and Initial check
+```{r}
+# load data-----
+dta <- as.data.table(read.csv('C:/Kaggle/Classification_with_Imbalanced_data/data.csv'
+                       ,header = TRUE, sep = ',', stringsAsFactors = FALSE ))
+
+#rename the target
+setnames(dta, 'var0', 'target')
+
+
+# Check the variable stats and data type
+summary(dta)
+
+str(dta)
+
+
+# Check the balance of target variable
+dta[, .(count = .N, pct=.N/nrow(dta)), by = target]
+# target is highly imbalance, with ratio of 2.5:97.5
+
+```
+
+
+### Data manipulation
+
+```{r}
+
+#remove the '$' frm the var4
+dta[, var4:= substring(var4, 2)]
+
+
+
+# check the cont of unique vvales in each columns
+apply(dta, 2, function(x) length(unique(x)))
+
+# Assuming variables with upto 10 unique values as categorical and else numeric
+# So, we will explicitly convert var1,var2,var5,var8,var10,var12 ae categorical.
+for( var in c('target', 'var1','var2','var5','var8','var10','var12')){
+  
+  dta[[var]] <- as.factor(dta[[var]])
+}
+
+
+# Rest of them be numeric
+for(var in c('var3', 'var4', 'var6','var7', 'var9', 'var11')){
+  dta[[var]] <- as.numeric(dta[[var]])
+}
+
+
+```
+
+
+### Fix the balance of the data by over and under sampling
+```{r}
+# Balance the sampling of the data using ROSE package. It undersamples the 
+# majority class and oversamples the minority class. It does this synthetically, 
+# so it does just repeat observations from minority class and hence resulting
+# dataset has better estimate than original dataset.
+
+blnc_dta <- data.table(ROSE(target ~ ., data = dta, seed = 1)$data)
+table(blnc_dta$target)
+
+```
+
+
+### Data cleaning and feature engineering
+```{r}
+barplot(summary(blnc_dta$var8))
+# since more than 85% of the values for var8 are N, so imputing the missing to N
+# would not change the variability of the variable much.
+
+blnc_dta[var8=='']$var8 <- 'N'
+
+
+# var9 has outlier as -999, so flooring them to zero.
+blnc_dta[var9==-999]$var9 <- 0
+
+
+# Create dummy variable for each unique levels of the categorical variables
+for(var in c('var1','var2','var5','var8','var10','var12')){
+  
+  blnc_dta <- cbind(blnc_dta, dummy(blnc_dta[[var]], sep = '_'))
+  # remove original variables
+  blnc_dta[[var]] <- NULL
+  
+  dummy_vars <- grep('blnc_dta',names(blnc_dta), value = TRUE)
+  setnames(blnc_dta, dummy_vars,  gsub('blnc_dta', parse(text = var), dummy_vars))
+}
+
+
+# Convert the dummy variables into factors. We identified the dummy variables
+# by '_' in their names
+for(var in grep('_', names(blnc_dta), value = TRUE)){
+  blnc_dta[[var]] <- as.factor(blnc_dta[[var]])
+  
+}
+```
+
+
+### Feature selection
+```{r}
+## A) Run a correlation among numerical variables
+blnc_dta_num <- blnc_dta[, c('var3', 'var4', 'var6','var7', 'var9', 'var11')
+                   , with =FALSE]
+
+corr <- round(cor(blnc_dta_num),1)
+ggcorrplot(corr)
+
+# we can see, var7 and var11 are highly correlated, we are going to keep either one of them.
+
+
+## B) feature importance from random forest classifier
+rf_classifier <- randomForest(target ~ ., data=blnc_dta, mtry=7, ntree=50, importance=TRUE)
+
+# Feature importance
+feat_imp <- importance(rf_classifier, type=2)
+
+# Making a new column with rownames
+names <- rownames(feat_imp)
+feat_imp <- data.table(feat_imp)
+feat_imp$names <- data.table(names)
+
+# sort features in decreasing order of importance
+feat_imp <- feat_imp[order(MeanDecreaseGini, decreasing = TRUE)]
+
+
+# So, now we see that var7 is little bit more important than var11, so we will remove var11.
+
+#For now, I am just taking top 20 features to fit the model.
+top20_feat <- feat_imp[1:21,][['names']]
+top20_feat <- setdiff(top15_feat, 'var11')
+
+
+# subset the data
+blnc_dta_sub <- blnc_dta[, c(top20_feat, 'target'), with=FALSE]
+
+```
+
+
+
+### Fitting model
+```{r}
+# Create modeling data sets by spliting original data.
+part_idx <- createDataPartition(blnc_dta_sub$target, p=0.6,list = FALSE,times = 1)
+mdl_train <- blnc_dta_sub[part_idx,]
+mdl_test <- blnc_dta_sub[-part_idx,]
+
+
+
+# train random forest model using 10-fold cross validation
+control <- trainControl(method="cv", number=5)
+set.seed(10)
+#tunegrid <- expand.grid(.mtry=c(7))
+rf_gridsearch <- train(target ~ ., data=mdl_train, method="rf",
+                       metric='Accuracy', trControl=control)
+
+
+plot(rf_gridsearch)
+# We can see, with 11 variables at each split gives the best accuracy.
+
+# Predict with the best model
+prediction <- data.table(predict(rf_gridsearch,mdl_test))
+
+# ROC curve
+roc.curve(mdl_test$target, prediction$V1)
+
+```
+
+
