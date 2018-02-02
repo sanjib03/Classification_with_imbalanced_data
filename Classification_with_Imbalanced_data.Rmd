@@ -172,7 +172,7 @@ feat_imp <- feat_imp[order(MeanDecreaseGini, decreasing = TRUE)]
 
 #For now, I am just taking top 20 features to fit the model.
 top20_feat <- feat_imp[1:21,][['names']]
-top20_feat <- setdiff(top15_feat, 'var11')
+top20_feat <- setdiff(top20_feat, 'var11')
 
 
 # subset the data
